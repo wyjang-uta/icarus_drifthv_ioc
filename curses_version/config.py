@@ -1,0 +1,12 @@
+# config.py
+SSH_HOSTNAME = '192.168.185.10'
+SSH_USERNAME = 'apc'
+SSH_PASSWORD = 'icarus'
+SSH_PROMPT = 'apc>'
+SSH_DETSTATUS_CMD = 'detstatus -all'
+SSH_CONNECT_RETRIES = 30
+SSH_CONNECT_DELAY = 10
+SSH_EXPECT_TIMEOUT = 15
+POLLING_INTERVAL = 900  # in miliseconds
+MENU_HEIGHT = 6  # 메뉴와 상태 메시지 차지하는 줄 수
+ALARM_THRESHOLD = 3
