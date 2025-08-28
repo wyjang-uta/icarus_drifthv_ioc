@@ -84,7 +84,7 @@ def monitor(stdscr):
                             }
                 
                     # curses log update
-                    display.update(stdscr, stat_params, lines, ssh_session)
+                    display.update(stdscr, stat_params, lines)
 
                     # console log
                     print(f'[UPS {now:%m/%d/%Y %H:%M:%S}] '

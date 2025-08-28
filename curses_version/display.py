@@ -53,7 +53,7 @@ def render(stdscr, running, lines, alarm_counter):
     
     return lines
 
-def update(stdscr, stat_params, lines, ssh_session):
+def update(stdscr, stat_params, lines):
     current_time = time.strftime("%H:%M:%S")
     in_voltage_str = stat_params['voltage'] or "0"
     in_freq_str = stat_params['freq'] or "0"
