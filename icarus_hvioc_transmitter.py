@@ -301,10 +301,10 @@ class HVUploaderGUI(QMainWindow):
         """(v2.7) 4개 전압 분배기 플롯 위젯 (범례 offset 수정)"""
         plot_item = pg.PlotItem(axisItems={'bottom': pg.DateAxisItem()})
         plot_widget = pg.PlotWidget(plotItem=plot_item)
-        plot_item.setTitle("Voltage Dividers")
+        #plot_item.setTitle("Voltage Dividers")
         plot_widget.showGrid(x=True, y=True, alpha=0.3)
         legend = plot_item.addLegend() 
-        plot_item.setLabel('left', 'Voltage (V)', color="#000000")
+        plot_item.setLabel('left', 'V.div. Voltage (V)', color="#000000")
         self.voltww_line = plot_item.plot(
             pen=pg.mkPen("#E60000", width=2), name="V_WW (West-West)"
         )
