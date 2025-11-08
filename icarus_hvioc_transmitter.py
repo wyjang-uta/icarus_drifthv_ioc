@@ -103,6 +103,17 @@ class HVTransmitterGUI(QMainWindow):
         self.epics_connected = False
         self.blink_state = False
 
+        # --- Log File Handling ---
+        self.log_filename = None
+        self.log_file_handle = None
+        try:
+            now = datetime.datetime.now()
+            self.log_filename = now.strftime("HV_Transmitter_Log_%Y%m%d-%H%M%s.txt")
+            self.log_file_handle = open(self.log_filename, 'w', encoding='utf-8', buffering=1)
+        except Exception as e:
+            print(f"FATAL:  Could not create log file: {e}")
+            self.log_filename = "ERROR_CREATING_FILE"
+
         # --- EPICS PVs ---
         self.volt_monitoring = None
         self.current_monitoring = None
@@ -164,11 +175,12 @@ class HVTransmitterGUI(QMainWindow):
 
         self.init_ui()
         self.log_message(f"Starting HV Transmitter v{VERSION_MAJOR}.{VERSION_MINOR}...")
+        self.log_message(f"Log file initialized: {self.log_filename}")
         self.initialize_epics()
         self.blink_timer.start()
         
     def init_ui(self):
-        """(v2.8) Set up the main user interface layout."""
+        """Set up the main user interface layout."""
         central_widget = QWidget()
         main_layout = QVBoxLayout(central_widget)
 
@@ -191,10 +203,10 @@ class HVTransmitterGUI(QMainWindow):
         main_layout.addWidget(control_group)
 
         # 2. Live Monitor Plots
-        plot_group = QGroupBox("Live Monitor - 30 min window")
+        plot_group = QGroupBox("Live Monitor - 2 hours window")
         plot_layout = QVBoxLayout(plot_group)
         plot_layout.setSpacing(0)
-        plot_layout.setContentsMargins(0, 0, 0, 0)
+        plot_layout.setContentsMargins(5, 5, 5, 5)
         self.plot_widget_vi = self.create_plot_widget_vi()
         plot_layout.addWidget(self.plot_widget_vi)
         self.plot_widget_divider = self.create_plot_widget_divider()
@@ -208,7 +220,8 @@ class HVTransmitterGUI(QMainWindow):
         main_layout.addWidget(plot_group, stretch=2)
 
         # 3. Log Area
-        log_group = QGroupBox("Live Log")
+        log_title = f"Live Log (Saving to: {self.log_filename})"
+        log_group = QGroupBox(log_title)
         log_layout = QVBoxLayout(log_group)
         self.log_widget.setReadOnly(True)
         self.log_widget.setFont(QFont("Courier New", 9))
@@ -262,6 +275,7 @@ class HVTransmitterGUI(QMainWindow):
     def create_plot_widget_vi(self):
         """(v2.7) 듀얼 Y축 (V/I) 플롯 위젯 (위쪽 X축 글자 숨김)"""
         plot_item = pg.PlotItem(axisItems={'bottom': pg.DateAxisItem()})
+        plot_item.setTitle("ICARUS Drift HV Slow Control Data")
         plot_widget = pg.PlotWidget(plotItem=plot_item)
         
         axis = plot_item.getAxis('bottom')
@@ -344,10 +358,21 @@ class HVTransmitterGUI(QMainWindow):
 
     def log_message(self, msg):
         now = QDateTime.currentDateTime().toString("yyyy-MM-dd hh:mm:ss")
+        log_line = f"[{now}] {msg}"
+
+        # 1. print on GUI widget
         self.log_widget.appendPlainText(f"[{now}] {msg}")
         self.log_widget.verticalScrollBar().setValue(
             self.log_widget.verticalScrollBar().maximum()
         )
+
+        # 2. write to log file
+        if self.log_file_handle:
+            try:
+                self.log_file_handle.write(log_line + "\n")
+            except Exception as e:
+                # send error message to GUI widget
+                self.log_widget.appendPlainText(f"[{now}] [FATAL LOG ERROR] {e}")
 
     def initialize_epics(self):
         """(v2.8) EPICS PV 초기화 및 'Real Mode' 활성화 여부 결정."""
@@ -719,7 +744,17 @@ class HVTransmitterGUI(QMainWindow):
 
     def closeEvent(self, event):
         """Ensure timer and file are closed when window is shut."""
+        self.log_message("--- Application Closing ---")
         self.stop_monitoring() # Stop timer and close file handle
+        # Close the log file handle
+        if self.log_file_handle:
+            try:
+                self.log_message("Closing log file.")
+                self.log_file_handle.close()
+                self.log_file_handle = None
+            except Exception as e:
+                print(f"Error closing log file: {e}")
+
         event.accept()
 
 # --- Application Entry Point ---
