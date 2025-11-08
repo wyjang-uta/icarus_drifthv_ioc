@@ -273,6 +273,8 @@ class HVTransmitterGUI(QMainWindow):
 
         # 1. 왼쪽 Y축 (전압)
         plot_item.setLabel('left', 'Voltage (V)', color="#FF0000")
+        plot_item.getAxis('left').setPen(pg.mkPen(color="#FF0000"))
+        plot_item.getAxis('left').setTextPen(pg.mkPen(color="#FF0000"))
         self.volt_line = plot_item.plot(
             pen=pg.mkPen("#FF0000", width=2), name="Voltage (Mon)"
         )
@@ -281,6 +283,8 @@ class HVTransmitterGUI(QMainWindow):
         )
         # 2. 오른쪽 Y축 (전류)
         plot_item.showAxis('right') 
+        plot_item.getAxis('right').setPen(pg.mkPen(color="#0000FF"))
+        plot_item.getAxis('right').setTextPen(pg.mkPen(color="#0000FF"))
         p2_viewbox = pg.ViewBox()
         plot_item.getAxis('right').linkToView(p2_viewbox)
         plot_item.getAxis('right').setLabel('Current (uA)', color="#0000FF")
@@ -322,6 +326,20 @@ class HVTransmitterGUI(QMainWindow):
         self.voltee_line = plot_item.plot(
             pen=pg.mkPen("#6600CC", width=2, style=Qt.PenStyle.DashLine), name="V_EE (East-East)"
         )
+
+        """ Hidden secondary axis to align two y-axes"""
+        plot_item.showAxis('right')
+        axis_right_dummy = plot_item.getAxis('right')
+        axis_right_dummy.setLabel('Dummy Label', color="#FFFFFF")
+        axis_right_dummy.setPen(pg.mkPen(color="#FFFFFF"))
+        axis_right_dummy.setTextPen(pg.mkPen(color="#FFFFFF"))
+        p2_viewbox_dummy = pg.ViewBox()
+        axis_right_dummy.linkToView(p2_viewbox_dummy)
+        plot_item.scene().addItem(p2_viewbox_dummy)
+        p2_viewbox_dummy.linkView(p2_viewbox_dummy.XAxis, plot_item.getViewBox())
+        def update_p2_dummy_geometry():
+            p2_viewbox_dummy.setGeometry(plot_item.getViewBox().sceneBoundingRect())
+        plot_item.getViewBox().sigResized.connect(update_p2_dummy_geometry)
         return plot_widget
 
     def log_message(self, msg):
