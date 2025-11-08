@@ -89,10 +89,10 @@ def reverse_readline(filename, buf_size=8192):
 
 # --- Main GUI Application Class ---
 
-class HVUploaderGUI(QMainWindow):
+class HVTransmitterGUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"ICARUS Drift HV EPICS Uploader v{VERSION_MAJOR}.{VERSION_MINOR}")
+        self.setWindowTitle(f"ICARUS Drift HV EPICS Transmitter v{VERSION_MAJOR}.{VERSION_MINOR}")
         self.setGeometry(100, 100, 800, 800)
 
         # --- State Variables ---
@@ -163,7 +163,7 @@ class HVUploaderGUI(QMainWindow):
         self.blink_timer.timeout.connect(self.update_led_blink_state)
 
         self.init_ui()
-        self.log_message(f"Starting HV Uploader v{VERSION_MAJOR}.{VERSION_MINOR}...")
+        self.log_message(f"Starting HV Transmitter v{VERSION_MAJOR}.{VERSION_MINOR}...")
         self.initialize_epics()
         self.blink_timer.start()
         
@@ -498,8 +498,10 @@ class HVUploaderGUI(QMainWindow):
             if not hv_new_timestamp:
                 return
 
+            # print live log
             if self.last_timestamp != hv_new_timestamp:
-                self.log_message(f"Updated record: {hv_lastline}")
+                log_line = hv_lastline.replace('\t', ' ')
+                self.log_message(f"{log_line}")
                 self.last_timestamp = hv_new_timestamp
                 hv_struc = hv_lastline.split()
                 
@@ -705,6 +707,6 @@ class HVUploaderGUI(QMainWindow):
 # --- Application Entry Point ---
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    window = HVUploaderGUI()
+    window = HVTransmitterGUI()
     window.show()
     sys.exit(app.exec())
