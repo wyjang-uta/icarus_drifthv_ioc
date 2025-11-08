@@ -9,20 +9,20 @@
 # History:
 #   (Original script history...)
 #
-#   Nov 7, 2025: GUI Upgrade (v2.8)
-#   - Added 3-mode RadioButtons (Real, Read-Only, Dry-Run).
+#   Nov 7, 2025: GUI Upgrade (v2.10)
+#   - Fixed v2.9 parsing bug, reverted X-axis to PC time.
 #
-#   Nov 7, 2025: GUI Upgrade (v2.9)
-#   - Added 30-minute data pre-loading when starting
-#     in Real or Read-Only mode.
-#   - Plot X-axis now uses timestamps from the file, not PC time.
+#   Nov 7, 2025: GUI Upgrade (v2.11)
+#   - Integrated 'reverse_readline' generator provided by user
+#     for efficient pre-loading of last N lines.
+#   - Added header skipping logic during reverse read.
 #
 ################################################################
 
 import sys
 import time
 import glob
-import os
+import os # ❗️ reverse_readline에 필요
 import random
 import datetime
 from epics import PV
@@ -39,7 +39,7 @@ import pyqtgraph as pg
 from collections import deque
 
 VERSION_MAJOR = 2
-VERSION_MINOR = 9
+VERSION_MINOR = 11
 POLLING_INTERVAL = 5  # unit in seconds (5000 ms)
 BLINK_INTERVAL = 500  # LED 깜빡임 간격 (ms)
 
@@ -55,6 +55,37 @@ def find_latest_file():
         return None
     latest_file = max(list_of_files, key=os.path.getctime)
     return latest_file
+
+# --- ❗️ (신규) 사용자 제공 함수 ---
+def reverse_readline(filename, buf_size=8192):
+  """A generator that returns the lines of a file in reverse order"""
+  with open(filename, 'rb') as fh:
+    segment = None
+    offset = 0
+    fh.seek(0, os.SEEK_END)
+    file_size = remaining_size = fh.tell()
+    while remaining_size > 0:
+      offset = min(file_size, offset + buf_size)
+      fh.seek(file_size - offset)
+      buffer = fh.read(min(remaining_size, buf_size))
+      # remove file's last "\n" if it exists, only for the first buffer
+      if remaining_size == file_size and buffer and buffer[-1] == b'\n':
+        buffer = buffer[:-1]
+      remaining_size -= buf_size
+      lines = buffer.split(b'\n') # ❗️ 바이트 단위로 분리
+      # append last chunk's segment to this chunk's last line
+      if segment is not None:
+        lines[-1] += segment
+      segment = lines[0]
+      lines = lines[1:]
+      # yield lines in this chunk except the segment
+      for line in reversed(lines):
+        # only decode on a parsed line, to avoid utf-8 decode error
+        yield line # ❗️ 바이트(bytes)를 반환
+    # Don't yield None if the file was empty
+    if segment is not None:
+      yield segment
+
 
 # --- Main GUI Application Class ---
 
@@ -83,7 +114,7 @@ class HVUploaderGUI(QMainWindow):
         self.voltee_monitoring = None
         
         # --- Plotting Variables ---
-        self.max_data_points = (30 * 60) // POLLING_INTERVAL
+        self.max_data_points = (30 * 60) // POLLING_INTERVAL # 360
         self.time_data = deque(maxlen=self.max_data_points)
         # (Plot 1)
         self.volt_data = deque(maxlen=self.max_data_points)
@@ -164,13 +195,11 @@ class HVUploaderGUI(QMainWindow):
         plot_layout = QVBoxLayout(plot_group)
         plot_layout.setSpacing(0)
         plot_layout.setContentsMargins(0, 0, 0, 0)
-        
         self.plot_widget_vi = self.create_plot_widget_vi()
         plot_layout.addWidget(self.plot_widget_vi)
         self.plot_widget_divider = self.create_plot_widget_divider()
         plot_layout.addWidget(self.plot_widget_divider)
         self.plot_widget_divider.setXLink(self.plot_widget_vi.getPlotItem())
-        
         main_layout.addWidget(plot_group, stretch=2)
 
         # 3. Log Area
@@ -332,7 +361,7 @@ class HVUploaderGUI(QMainWindow):
         self.update_led_blink_state()
 
     def start_monitoring(self):
-        """❗️ (v2.9) 3가지 모드에 따라 모니터링 시작 (사전 로드 추가)."""
+        """❗️ (v2.11) 3가지 모드에 따라 모니터링 시작 (reverse_readline 사용)."""
         
         # 1. 모드 결정
         if self.radio_real.isChecked(): self.mode = "real"
@@ -366,13 +395,10 @@ class HVUploaderGUI(QMainWindow):
                 
                 self.log_message(f"Monitoring file: {self.current_filename}")
                 
-                # ❗️ (신규) 30분 데이터 사전 로드
+                # ❗️ (v2.11) 마지막 N줄 사전 로드 (reverse_readline 사용)
                 self.preload_file_data(self.current_filename)
                 
-                # 모니터링을 위해 파일 핸들 열기
                 self.current_file_handle = open(self.current_filename, "r")
-                
-                # (참고) preload_file_data가 self.last_timestamp를 이미 설정했음
                 
                 self.monitor_timer.start()
                 
@@ -415,7 +441,7 @@ class HVUploaderGUI(QMainWindow):
         self.voltew_data.clear()
         self.voltwe_data.clear()
         self.voltee_data.clear()
-        self.update_all_plot_lines() # ❗️ 빈 데이터로 그래프 업데이트
+        self.update_all_plot_lines() # 빈 데이터로 그래프 업데이트
 
     def read_last_line(self):
         """(v2.8) Helper function to read the very last line of the current file."""
@@ -429,7 +455,7 @@ class HVUploaderGUI(QMainWindow):
             hv_lastline = hv_data[-1].strip()
             if not hv_lastline: return "", ""
             hv_struc = hv_lastline.split()
-            hv_timestamp = hv_struc[0] # hv_struc[0] = 'HH:MM:SS.f'
+            hv_timestamp = hv_struc[0]
             return hv_lastline, hv_timestamp
         except Exception as e:
             self.log_message(f"[ERROR] Failed to read last line: {e}")
@@ -459,7 +485,7 @@ class HVUploaderGUI(QMainWindow):
                     self.current_file_handle.close()
                 self.current_file_handle = open(self.current_filename, "r")
                 
-                # ❗️ 새 파일이므로, 30분치 사전 로드 수행
+                # ❗️ 새 파일이므로, 마지막 N줄 사전 로드 (reverse_readline 사용)
                 self.preload_file_data(self.current_filename)
                 return
                 
@@ -502,69 +528,63 @@ class HVUploaderGUI(QMainWindow):
             self.update_plot(hv_struc_str)
             self.put_to_epics(hv_struc_str)
 
-    def parse_datetime_from_struc(self, hv_struc):
-        """❗️ (신규) hv_struc에서 datetime 객체를 파싱합니다."""
-        try:
-            time_str = hv_struc[0]
-            date_str = hv_struc[1]
-            datetime_str = f"{date_str} {time_str}"
-            
-            # 두 가지 형식 시도 (밀리초 포함/미포함)
-            try:
-                dt_obj = datetime.datetime.strptime(datetime_str, "%Y-%m-%d %H:%M:%S.%f")
-            except ValueError:
-                dt_obj = datetime.datetime.strptime(datetime_str, "%Y-%m-%d %H:%M:%S")
-            return dt_obj
-        except (IndexError, ValueError) as e:
-            self.log_message(f"[PARSE ERROR] Cannot parse timestamp: {hv_struc} ({e})")
-            return None
-
     def preload_file_data(self, filename):
-        """❗️ (신규) 파일에서 지난 30분간의 데이터를 읽어 플롯을 채웁니다."""
-        self.log_message(f"Pre-loading data from {filename}...")
-        self.clear_plot() # ❗️ 시작하기 전에 플롯 초기화
+        """❗️ (v2.12) 'reverse_readline' 및 '//' 헤더 감지 로직 사용."""
+        self.log_message(f"Pre-loading last {self.max_data_points} data points from {filename}...")
+        self.clear_plot() # 시작하기 전에 플롯 초기화
         
-        now = datetime.datetime.now()
-        cutoff_dt = now - datetime.timedelta(minutes=30)
-        
-        records_to_plot = []
-        
+        preloaded_lines_reversed = []
         try:
-            with open(filename, "r") as f:
-                lines = f.readlines()
+            # (v2.11) 파일을 거꾸로 읽음
+            for line_bytes in reverse_readline(filename):
+                line_str = line_bytes.decode('utf-8', errors='ignore').strip()
+                
+                # ❗️ FIX (v2.12): 헤더를 명시적으로 확인합니다.
+                if not line_str or line_str.startswith("//"):
+                    if line_str: # 빈 줄이 아닌 경우에만 (즉, 헤더인 경우) 로그
+                        self.log_message(f"[PRELOAD] Skipping header line: {line_str}")
+                    continue
+                    
+                hv_struc = line_str.split()
+                
+                # ❗️ (추가) 타임스탬프 형식 확인 (데이터 무결성)
+                if not hv_struc or ':' not in hv_struc[0]:
+                    self.log_message(f"[PRELOAD] Skipping malformed line (no ':'): {line_str}")
+                    continue
+
+                preloaded_lines_reversed.append(line_str)
+                
+                # 360줄을 채우면 중단
+                if len(preloaded_lines_reversed) >= self.max_data_points:
+                    break
+                    
+        except FileNotFoundError:
+            self.log_message(f"[PRELOAD ERROR] File not found: {filename}")
+            return
         except Exception as e:
-            self.log_message(f"[PRELOAD ERROR] Failed to read file: {e}")
+            self.log_message(f"[PRELOAD ERROR] Failed to reverse-read file: {e}")
             return
 
-        if not lines:
-            self.log_message("[PRELOAD] File is empty. No data pre-loaded.")
+        if not preloaded_lines_reversed:
+            self.log_message("[PRELOAD] File is empty or contains no valid data.")
             return
 
-        for line in lines:
+        # (v2.11) 읽은 데이터를 다시 뒤집어 시간 순서(오래된->최신)로 변경
+        preloaded_lines = list(reversed(preloaded_lines_reversed))
+        
+        # (v2.10) X축을 위한 가상 타임라인 생성
+        current_time = time.time()
+        
+        for i, line in enumerate(preloaded_lines):
             hv_struc = line.strip().split()
-            dt_obj = self.parse_datetime_from_struc(hv_struc)
+            if len(hv_struc) < 10:
+                continue
+                
+            time_stamp = current_time - ((len(preloaded_lines) - 1) - i) * POLLING_INTERVAL
             
-            # ❗️ 파싱 성공 및 30분 이내 데이터인지 확인
-            if dt_obj and dt_obj >= cutoff_dt:
-                records_to_plot.append((dt_obj, hv_struc))
-        
-        if not records_to_plot:
-            self.log_message("[PRELOAD] No recent (30min) data found in file.")
-            # ❗️ 30분 내 데이터가 없어도, 파일의 '마지막' 라인 타임스탬프는 설정
-            last_struc = lines[-1].strip().split()
-            self.last_timestamp = last_struc[0]
-            return
-
-        # ❗️ 혹시 모를 순서 보장을 위해 정렬 (이미 정렬되어 있을 가능성이 높음)
-        records_to_plot.sort(key=lambda x: x[0])
-        
-        # ❗️ Deque의 maxlen을 초과할 수 있으므로, 마지막 N개만 사용
-        records_to_plot = records_to_plot[-self.max_data_points:]
-
-        # ❗️ Deque 버퍼 채우기 (setData는 아직 호출 안 함)
-        for dt_obj, hv_struc in records_to_plot:
             try:
-                self.time_data.append(dt_obj.timestamp())
+                # Deque 버퍼 채우기 (hv_struc 사용)
+                self.time_data.append(time_stamp)
                 self.volt_data.append(int(hv_struc[2]))
                 self.curr_data.append(int(hv_struc[3]))
                 self.voltww_data.append(int(hv_struc[4]))
@@ -574,18 +594,21 @@ class HVUploaderGUI(QMainWindow):
                 self.volt_set_data.append(int(hv_struc[8]))
                 self.curr_set_data.append(int(hv_struc[9]))
             except (ValueError, IndexError):
-                continue # 파싱 실패한 라인은 건너뜀
+                self.log_message(f"[PRELOAD WARN] Skipping malformed line: {line.strip()}")
+                continue 
 
-        # ❗️ 마지막 타임스탬프 설정 (중복 방지용)
-        self.last_timestamp = records_to_plot[-1][1][0]
+        # 마지막 타임스탬프 설정 (중복 방지용)
+        last_struc = preloaded_lines[-1].strip().split()
+        if last_struc:
+            self.last_timestamp = last_struc[0]
         
-        # ❗️ 8개 라인을 한 번에 모두 플롯
+        # 8개 라인을 한 번에 모두 플롯
         self.update_all_plot_lines()
         
         self.log_message(f"Pre-loaded {len(self.time_data)} records (Last TS: {self.last_timestamp})")
 
     def update_all_plot_lines(self):
-        """❗️ (신규) 9개의 Deque 데이터를 8개의 플롯 라인에 모두 설정합니다."""
+        """❗️ (v2.9) 9개의 Deque 데이터를 8개의 플롯 라인에 모두 설정합니다."""
         time_list = list(self.time_data)
         
         # Plot 1
@@ -600,26 +623,38 @@ class HVUploaderGUI(QMainWindow):
         if self.voltee_line: self.voltee_line.setData(x=time_list, y=list(self.voltee_data))
 
     def update_plot(self, hv_struc):
-        """❗️ (v2.9) 단일 hv_struc을 파싱하고 9개 Deque에 추가한 뒤 플롯을 갱신합니다."""
+        """❗️ (v2.10) X축을 PC 시간(time.time)으로 사용하여 8개 라인을 업데이트합니다."""
         
-        # 1. ❗️ 파일에서 시간 파싱
-        dt_obj = self.parse_datetime_from_struc(hv_struc)
-        if dt_obj is None:
-            return # 파싱 실패
-            
         try:
-            # 2. 9개 버퍼에 데이터 추가
-            self.time_data.append(dt_obj.timestamp())
-            self.volt_data.append(int(hv_struc[2]))
-            self.curr_data.append(int(hv_struc[3]))
-            self.voltww_data.append(int(hv_struc[4]))
-            self.voltew_data.append(int(hv_struc[5]))
-            self.voltwe_data.append(int(hv_struc[6]))
-            self.voltee_data.append(int(hv_struc[7]))
-            self.volt_set_data.append(int(hv_struc[8]))
-            self.curr_set_data.append(int(hv_struc[9]))
+            # X축을 PC 시간으로 사용 (v2.8 로직으로 복원)
+            current_time = time.time()
+            
+            # V_mon, I_mon
+            volt_val = int(hv_struc[2])
+            curr_val = int(hv_struc[3])
+            
+            # Vdiv 4개
+            voltww_val = int(hv_struc[4])
+            voltew_val = int(hv_struc[5])
+            voltwe_val = int(hv_struc[6])
+            voltee_val = int(hv_struc[7])
+            
+            # V_set, I_set
+            volt_set_val = int(hv_struc[8])
+            curr_set_val = int(hv_struc[9])
 
-            # 3. ❗️ 8개 라인 그래프 갱신
+            # 9개 버퍼에 데이터 추가
+            self.time_data.append(current_time)
+            self.volt_data.append(volt_val)
+            self.curr_data.append(curr_val)
+            self.voltww_data.append(voltww_val)
+            self.voltew_data.append(voltew_val)
+            self.voltwe_data.append(voltwe_val)
+            self.voltee_data.append(voltee_val)
+            self.volt_set_data.append(volt_set_val)
+            self.curr_set_data.append(curr_set_val)
+
+            # 8개 라인 그래프 갱신
             self.update_all_plot_lines()
             
         except (IndexError, ValueError) as e:
