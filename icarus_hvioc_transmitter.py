@@ -200,6 +200,11 @@ class HVUploaderGUI(QMainWindow):
         self.plot_widget_divider = self.create_plot_widget_divider()
         plot_layout.addWidget(self.plot_widget_divider)
         self.plot_widget_divider.setXLink(self.plot_widget_vi.getPlotItem())
+
+        axis_width = 80
+        self.plot_widget_vi.getPlotItem().getAxis('left').setWidth(axis_width)
+        self.plot_widget_divider.getPlotItem().getAxis('left').setWidth(axis_width)
+        
         main_layout.addWidget(plot_group, stretch=2)
 
         # 3. Log Area
