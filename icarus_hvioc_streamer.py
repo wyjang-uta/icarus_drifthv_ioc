@@ -89,10 +89,10 @@ def reverse_readline(filename, buf_size=8192):
 
 # --- Main GUI Application Class ---
 
-class HVTransmitterGUI(QMainWindow):
+class HVStreamerGUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"ICARUS Drift HV EPICS Transmitter v{VERSION_MAJOR}.{VERSION_MINOR}")
+        self.setWindowTitle(f"ICARUS Drift HV EPICS Streamer v{VERSION_MAJOR}.{VERSION_MINOR}")
         self.setGeometry(100, 100, 800, 800)
 
         # --- State Variables ---
@@ -108,7 +108,7 @@ class HVTransmitterGUI(QMainWindow):
         self.log_file_handle = None
         try:
             now = datetime.datetime.now()
-            self.log_filename = now.strftime("HV_Transmitter_Log_%Y%m%d-%H%M%s.txt")
+            self.log_filename = now.strftime("HV_Streamer_Log_%Y%m%d-%H%M%s.txt")
             self.log_file_handle = open(self.log_filename, 'w', encoding='utf-8', buffering=1)
         except Exception as e:
             print(f"FATAL:  Could not create log file: {e}")
@@ -174,7 +174,7 @@ class HVTransmitterGUI(QMainWindow):
         self.blink_timer.timeout.connect(self.update_led_blink_state)
 
         self.init_ui()
-        self.log_message(f"Starting HV Transmitter v{VERSION_MAJOR}.{VERSION_MINOR}...")
+        self.log_message(f"Starting HV Streamer v{VERSION_MAJOR}.{VERSION_MINOR}...")
         self.log_message(f"Log file initialized: {self.log_filename}")
         self.initialize_epics()
         self.blink_timer.start()
@@ -284,6 +284,7 @@ class HVTransmitterGUI(QMainWindow):
         
         plot_widget.showGrid(x=True, y=True, alpha=0.3) 
         legend = plot_item.addLegend() 
+        legend.setBrush((255, 255, 255, 180))
 
         # 1. 왼쪽 Y축 (전압)
         plot_item.setLabel('left', 'Voltage (V)', color="#FF0000")
@@ -327,6 +328,7 @@ class HVTransmitterGUI(QMainWindow):
         #plot_item.setTitle("Voltage Dividers")
         plot_widget.showGrid(x=True, y=True, alpha=0.3)
         legend = plot_item.addLegend() 
+        legend.setBrush((255,255,255,230))
         plot_item.setLabel('left', 'V.div. Voltage (V)', color="#000000")
         self.voltww_line = plot_item.plot(
             pen=pg.mkPen("#E60000", width=2), name="V_WW (West-West)"
@@ -760,6 +762,6 @@ class HVTransmitterGUI(QMainWindow):
 # --- Application Entry Point ---
 if __name__ == '__main__':
     app = QApplication(sys.argv)
-    window = HVTransmitterGUI()
+    window = HVStreamerGUI()
     window.show()
     sys.exit(app.exec())
