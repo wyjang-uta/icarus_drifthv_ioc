@@ -9,13 +9,13 @@
 # History:
 #   (Original script history...)
 #
-#   Nov 7, 2025: GUI Upgrade (v2.10)
-#   - Fixed v2.9 parsing bug, reverted X-axis to PC time.
-#
 #   Nov 7, 2025: GUI Upgrade (v2.11)
-#   - Integrated 'reverse_readline' generator provided by user
-#     for efficient pre-loading of last N lines.
-#   - Added header skipping logic during reverse read.
+#   - Integrated 'reverse_readline' for efficient pre-loading.
+#
+#   Nov 8, 2025: GUI Upgrade (v2.12)
+#   - Added automatic log file rotation at midnight.
+#   - Added os.makedirs() for log directory stability.
+#   - Fixed %s format string bug in log filename for Windows.
 #
 ################################################################
 
@@ -39,7 +39,7 @@ import pyqtgraph as pg
 from collections import deque
 
 VERSION_MAJOR = 2
-VERSION_MINOR = 11
+VERSION_MINOR = 12
 POLLING_INTERVAL = 5  # unit in seconds (5000 ms)
 BLINK_INTERVAL = 500  # LED 깜빡임 간격 (ms)
 
@@ -56,7 +56,7 @@ def find_latest_file():
     latest_file = max(list_of_files, key=os.path.getctime)
     return latest_file
 
-# --- ❗️ (신규) 사용자 제공 함수 ---
+# --- (v2.11) 사용자 제공 함수 ---
 def reverse_readline(filename, buf_size=8192):
   """A generator that returns the lines of a file in reverse order"""
   with open(filename, 'rb') as fh:
@@ -102,17 +102,13 @@ class HVStreamerGUI(QMainWindow):
         self.mode = "real" # "real", "readonly", "dry"
         self.epics_connected = False
         self.blink_state = False
+        self.current_log_date = None # ❗️ (v2.12) 현재 로그 날짜 저장
 
-        # --- Log File Handling ---
-        self.log_filename = None
+        # --- ❗️ (v2.12) Log File Handling (Helper 함수로 분리) ---
+        self.log_filename = "ERROR_CREATING_FILE" # 기본값
         self.log_file_handle = None
-        try:
-            now = datetime.datetime.now()
-            self.log_filename = now.strftime("HV_Streamer_Log_%Y%m%d-%H%M%s.txt")
-            self.log_file_handle = open(self.log_filename, 'w', encoding='utf-8', buffering=1)
-        except Exception as e:
-            print(f"FATAL:  Could not create log file: {e}")
-            self.log_filename = "ERROR_CREATING_FILE"
+        self.log_group = None # ❗️ (v2.12) UI가 로드되기 전이므로 None
+        self.open_new_log_file(datetime.datetime.now())
 
         # --- EPICS PVs ---
         self.volt_monitoring = None
@@ -173,6 +169,7 @@ class HVStreamerGUI(QMainWindow):
         self.blink_timer.setInterval(BLINK_INTERVAL)
         self.blink_timer.timeout.connect(self.update_led_blink_state)
 
+        # ❗️ init_ui()는 self.log_filename이 설정된 *이후*에 호출
         self.init_ui()
         self.log_message(f"Starting HV Streamer v{VERSION_MAJOR}.{VERSION_MINOR}...")
         self.log_message(f"Log file initialized: {self.log_filename}")
@@ -203,17 +200,17 @@ class HVStreamerGUI(QMainWindow):
         main_layout.addWidget(control_group)
 
         # 2. Live Monitor Plots
-        plot_group = QGroupBox("Live Monitor - 2 hours window")
+        plot_group = QGroupBox("Live Monitor - 2 hours window") # ❗️ User-modified: 2 hours
         plot_layout = QVBoxLayout(plot_group)
         plot_layout.setSpacing(0)
-        plot_layout.setContentsMargins(5, 5, 5, 5)
+        plot_layout.setContentsMargins(5, 5, 5, 5) # ❗️ User-modified: margins
         self.plot_widget_vi = self.create_plot_widget_vi()
         plot_layout.addWidget(self.plot_widget_vi)
         self.plot_widget_divider = self.create_plot_widget_divider()
         plot_layout.addWidget(self.plot_widget_divider)
         self.plot_widget_divider.setXLink(self.plot_widget_vi.getPlotItem())
 
-        axis_width = 80
+        axis_width = 80 # ❗️ User-modified: y-axis alignment
         self.plot_widget_vi.getPlotItem().getAxis('left').setWidth(axis_width)
         self.plot_widget_divider.getPlotItem().getAxis('left').setWidth(axis_width)
         
@@ -221,12 +218,13 @@ class HVStreamerGUI(QMainWindow):
 
         # 3. Log Area
         log_title = f"Live Log (Saving to: {self.log_filename})"
-        log_group = QGroupBox(log_title)
-        log_layout = QVBoxLayout(log_group)
+        # ❗️ (v2.12) QGroupBox을 self 변수에 저장
+        self.log_group = QGroupBox(log_title)
+        log_layout = QVBoxLayout(self.log_group)
         self.log_widget.setReadOnly(True)
         self.log_widget.setFont(QFont("Courier New", 9))
         log_layout.addWidget(self.log_widget)
-        main_layout.addWidget(log_group, stretch=1)
+        main_layout.addWidget(self.log_group, stretch=1)
 
         # 4. Status Bar (LED 포함)
         status_layout = QHBoxLayout()
@@ -272,98 +270,159 @@ class HVStreamerGUI(QMainWindow):
         base_color_epics = "#00FF00" if self.epics_connected else "#FF0000"
         self.set_led_style(self.led_epics_indicator, base_color_epics)
 
-    def create_plot_widget_vi(self):
-        """(v2.7) 듀얼 Y축 (V/I) 플롯 위젯 (위쪽 X축 글자 숨김)"""
-        plot_item = pg.PlotItem(axisItems={'bottom': pg.DateAxisItem()})
-        plot_item.setTitle("ICARUS Drift HV Slow Control Data")
-        plot_widget = pg.PlotWidget(plotItem=plot_item)
+    # ❗️ (신규 v2.12) 로그 파일 생성 헬퍼
+    def open_new_log_file(self, dt_obj):
+        """새 로그 파일을 생성하고 self 변수들을 업데이트합니다."""
+        try:
+            log_dir = "logs"
+            # ❗️ (v2.12) %s -> %H%M%S 버그 수정
+            log_base_name = dt_obj.strftime("HV_Streamer_Log_%Y%m%d_%H%M%S.txt")
+            self.log_filename = os.path.join(log_dir, log_base_name)
+            
+            # ❗️ (v2.12) logs/ 디렉토리 자동 생성
+            os.makedirs(log_dir, exist_ok=True) 
+            
+            self.log_file_handle = open(self.log_filename, 'w', encoding='utf-8', buffering=1)
+            self.current_log_date = dt_obj.date()
+            
+            # ❗️ (v2.12) GUI가 로드된 후라면, GUI 제목도 업데이트
+            if self.log_group: 
+                self.log_group.setTitle(f"Live Log (Saving to: {self.log_filename})")
+            
+            return True # 성공
+        except Exception as e:
+            # ❗️ GUI가 있든 없든 print()는 항상 작동함
+            print(f"FATAL: Could not create log file: {e}")
+            if self.log_widget: # GUI가 로드된 후라면
+                self.log_widget.appendPlainText(f"[{QDateTime.currentDateTime().toString('yyyy-MM-dd hh:mm:ss')}] [FATAL LOG ERROR] {e}")
+            self.log_filename = "ERROR_CREATING_FILE"
+            self.log_file_handle = None
+            return False # 실패
+
+    # ❗️ (신규 v2.12) 로그 로테이션 함수
+    def rotate_log_file(self, new_date_obj):
+        """자정이 지났을 때 새 로그 파일로 교체합니다."""
+        self.log_message("Midnight passed. Rotating to new log file...")
         
-        axis = plot_item.getAxis('bottom')
+        # 1. 이전 파일 닫기
+        if self.log_file_handle:
+            try:
+                self.log_file_handle.close()
+            except Exception as e:
+                self.log_message(f"[ERROR] Failed to close old log file: {e}")
+        
+        # 2. 새 파일 열기 (자정 00:00:00 기준)
+        dt_obj = datetime.datetime.combine(new_date_obj, datetime.time.min)
+        if self.open_new_log_file(dt_obj):
+            self.log_message("Continuing log from previous day.")
+        else:
+            self.log_message("[FATAL] Failed to open new log file! Logging to GUI only.")
+
+    def create_plot_widget_vi(self):
+        """(v2.11) 듀얼 Y축 (V/I) 플롯 위젯 (위쪽 X축 글자 숨김)"""
+        # ❗️ (v2.11) plot_item -> self.plot_item_vi
+        self.plot_item_vi = pg.PlotItem(axisItems={'bottom': pg.DateAxisItem()})
+        self.plot_item_vi.setTitle("ICARUS Drift HV Slow Control Data")
+        plot_widget = pg.PlotWidget(plotItem=self.plot_item_vi)
+        
+        axis = self.plot_item_vi.getAxis('bottom')
         axis.setStyle(showValues=False)
         axis.setLabel(None)
         
         plot_widget.showGrid(x=True, y=True, alpha=0.3) 
-        legend = plot_item.addLegend() 
-        legend.setBrush((255, 255, 255, 180))
-
+        legend = self.plot_item_vi.addLegend() 
+        legend.setBrush((255, 255, 255, 180)) # ❗️ User-modified:
+ 
         # 1. 왼쪽 Y축 (전압)
-        plot_item.setLabel('left', 'Voltage (V)', color="#FF0000")
-        plot_item.getAxis('left').setPen(pg.mkPen(color="#FF0000"))
-        plot_item.getAxis('left').setTextPen(pg.mkPen(color="#FF0000"))
-        self.volt_line = plot_item.plot(
+        axis_left = self.plot_item_vi.getAxis('left')
+        axis_left.setLabel('Voltage (V)', color="#FF0000")
+        axis_left.setPen(pg.mkPen(color="#FF0000"))
+        axis_left.setTextPen(pg.mkPen(color="#FF0000"))
+        self.volt_line = self.plot_item_vi.plot(
             pen=pg.mkPen("#FF0000", width=2), name="Voltage (Mon)"
         )
-        self.volt_set_line = plot_item.plot(
+        self.volt_set_line = self.plot_item_vi.plot(
             pen=pg.mkPen("#FF0000", width=2, style=Qt.PenStyle.DashLine), name="Voltage (Set)"
         )
         # 2. 오른쪽 Y축 (전류)
-        plot_item.showAxis('right') 
-        plot_item.getAxis('right').setPen(pg.mkPen(color="#0000FF"))
-        plot_item.getAxis('right').setTextPen(pg.mkPen(color="#0000FF"))
-        p2_viewbox = pg.ViewBox()
-        plot_item.getAxis('right').linkToView(p2_viewbox)
-        plot_item.getAxis('right').setLabel('Current (uA)', color="#0000FF")
-        plot_item.scene().addItem(p2_viewbox)
+        self.plot_item_vi.showAxis('right') 
+        axis_right = self.plot_item_vi.getAxis('right')
+        axis_right.setPen(pg.mkPen(color="#0000FF"))
+        axis_right.setTextPen(pg.mkPen(color="#0000FF"))
+        
+        # ❗️ (v2.11) p2_viewbox -> self.p2_viewbox_vi
+        self.p2_viewbox_vi = pg.ViewBox()
+        axis_right.linkToView(self.p2_viewbox_vi)
+        axis_right.setLabel('Current (uA)', color="#0000FF")
+        self.plot_item_vi.scene().addItem(self.p2_viewbox_vi)
         self.curr_line = pg.PlotCurveItem(
             pen=pg.mkPen("#0000FF", width=2), name="Current (Mon)"
         )
         self.curr_set_line = pg.PlotCurveItem(
             pen=pg.mkPen("#0000FF", width=2, style=Qt.PenStyle.DashLine), name="Current (Set)"
         )
-        p2_viewbox.addItem(self.curr_line)
-        p2_viewbox.addItem(self.curr_set_line)
+        self.p2_viewbox_vi.addItem(self.curr_line)
+        self.p2_viewbox_vi.addItem(self.curr_set_line)
         legend.addItem(self.curr_line, name="Current (Mon)")
         legend.addItem(self.curr_set_line, name="Current (Set)")
         # 3. X축 및 뷰박스 크기 동기화
-        p2_viewbox.linkView(p2_viewbox.XAxis, plot_item.getViewBox())
+        self.p2_viewbox_vi.linkView(self.p2_viewbox_vi.XAxis, self.plot_item_vi.getViewBox())
         def update_p2_viewbox_geometry():
-            p2_viewbox.setGeometry(plot_item.getViewBox().sceneBoundingRect())
-        plot_item.getViewBox().sigResized.connect(update_p2_viewbox_geometry)
+            self.p2_viewbox_vi.setGeometry(self.plot_item_vi.getViewBox().sceneBoundingRect())
+        self.plot_item_vi.getViewBox().sigResized.connect(update_p2_viewbox_geometry)
         return plot_widget 
 
     def create_plot_widget_divider(self):
-        """(v2.7) 4개 전압 분배기 플롯 위젯 (범례 offset 수정)"""
-        plot_item = pg.PlotItem(axisItems={'bottom': pg.DateAxisItem()})
-        plot_widget = pg.PlotWidget(plotItem=plot_item)
-        #plot_item.setTitle("Voltage Dividers")
+        """(v2.11) 4개 전압 분배기 플롯 위젯 (범례 offset 수정)"""
+        # ❗️ (v2.11) plot_item -> self.plot_item_divider
+        self.plot_item_divider = pg.PlotItem(axisItems={'bottom': pg.DateAxisItem()})
+        plot_widget = pg.PlotWidget(plotItem=self.plot_item_divider)
+        #plot_item.setTitle("Voltage Dividers") # ❗️ User-modified:
         plot_widget.showGrid(x=True, y=True, alpha=0.3)
-        legend = plot_item.addLegend() 
-        legend.setBrush((255,255,255,230))
-        plot_item.setLabel('left', 'V.div. Voltage (V)', color="#000000")
-        self.voltww_line = plot_item.plot(
-            pen=pg.mkPen("#E60000", width=2), name="V_WW (West-West)"
+        legend = self.plot_item_divider.addLegend() 
+        legend.setBrush((255,255,255,230)) # ❗️ User-modified:
+        
+        # ❗️ (v2.11) 축 객체에 setPen/setTextPen 적용
+        axis_left = self.plot_item_divider.getAxis('left')
+        axis_left.setLabel('V.div. Voltage (V)', color="#000000")
+        axis_left.setPen(pg.mkPen(color="#000000"))
+        axis_left.setTextPen(pg.mkPen(color="#000000"))
+        
+        self.voltww_line = self.plot_item_divider.plot(
+            pen=pg.mkPen("#00FFFF", width=2), name="V_WW (West-West)"
         )
-        self.voltew_line = plot_item.plot(
-            pen=pg.mkPen("#4D8000", width=2), name="V_EW (East-West)"
+        self.voltew_line = self.plot_item_divider.plot(
+            pen=pg.mkPen("#FF00FF", width=2), name="V_EW (East-West)"
         )
-        self.voltwe_line = plot_item.plot(
-            pen=pg.mkPen("#005C99", width=2, style=Qt.PenStyle.DashLine), name="V_WE (West-East)"
+        self.voltwe_line = self.plot_item_divider.plot(
+            pen=pg.mkPen("#FFFF00", width=2, style=Qt.PenStyle.DashLine), name="V_WE (West-East)"
         )
-        self.voltee_line = plot_item.plot(
-            pen=pg.mkPen("#6600CC", width=2, style=Qt.PenStyle.DashLine), name="V_EE (East-East)"
+        self.voltee_line = self.plot_item_divider.plot(
+            pen=pg.mkPen("#000000", width=2, style=Qt.PenStyle.DashLine), name="V_EE (East-East)"
         )
 
         """ Hidden secondary axis to align two y-axes"""
-        plot_item.showAxis('right')
-        axis_right_dummy = plot_item.getAxis('right')
-        axis_right_dummy.setLabel('Dummy Label', color="#FFFFFF")
+        self.plot_item_divider.showAxis('right')
+        axis_right_dummy = self.plot_item_divider.getAxis('right')
+        axis_right_dummy.setLabel('Dummy Label', color="#FFFFFF") 
         axis_right_dummy.setPen(pg.mkPen(color="#FFFFFF"))
         axis_right_dummy.setTextPen(pg.mkPen(color="#FFFFFF"))
         p2_viewbox_dummy = pg.ViewBox()
         axis_right_dummy.linkToView(p2_viewbox_dummy)
-        plot_item.scene().addItem(p2_viewbox_dummy)
-        p2_viewbox_dummy.linkView(p2_viewbox_dummy.XAxis, plot_item.getViewBox())
+        self.plot_item_divider.scene().addItem(p2_viewbox_dummy)
+        p2_viewbox_dummy.linkView(p2_viewbox_dummy.XAxis, self.plot_item_divider.getViewBox())
         def update_p2_dummy_geometry():
-            p2_viewbox_dummy.setGeometry(plot_item.getViewBox().sceneBoundingRect())
-        plot_item.getViewBox().sigResized.connect(update_p2_dummy_geometry)
+            p2_viewbox_dummy.setGeometry(self.plot_item_divider.getViewBox().sceneBoundingRect())
+        self.plot_item_divider.getViewBox().sigResized.connect(update_p2_dummy_geometry)
         return plot_widget
 
     def log_message(self, msg):
+        """(v2.12) GUI 위젯과 로그 파일 양쪽에 메시지를 씁니다."""
         now = QDateTime.currentDateTime().toString("yyyy-MM-dd hh:mm:ss")
         log_line = f"[{now}] {msg}"
 
         # 1. print on GUI widget
-        self.log_widget.appendPlainText(f"[{now}] {msg}")
+        self.log_widget.appendPlainText(log_line) # ❗️ f-string 수정
         self.log_widget.verticalScrollBar().setValue(
             self.log_widget.verticalScrollBar().maximum()
         )
@@ -411,7 +470,7 @@ class HVStreamerGUI(QMainWindow):
         self.update_led_blink_state()
 
     def start_monitoring(self):
-        """❗️ (v2.11) 3가지 모드에 따라 모니터링 시작 (reverse_readline 사용)."""
+        """(v2.11) 3가지 모드에 따라 모니터링 시작 (reverse_readline 사용)."""
         
         # 1. 모드 결정
         if self.radio_real.isChecked(): self.mode = "real"
@@ -492,6 +551,14 @@ class HVStreamerGUI(QMainWindow):
         self.voltwe_data.clear()
         self.voltee_data.clear()
         self.update_all_plot_lines() # 빈 데이터로 그래프 업데이트
+        
+        # ❗️ (v2.13) Y축 범위 리셋
+        if self.plot_item_vi:
+            self.plot_item_vi.setYRange(-10, 10)
+        if self.p2_viewbox_vi:
+            self.p2_viewbox_vi.setYRange(0, 1)
+        if self.plot_item_divider:
+            self.plot_item_divider.setYRange(-10, 10)
 
     def read_last_line(self):
         """(v2.8) Helper function to read the very last line of the current file."""
@@ -512,14 +579,20 @@ class HVStreamerGUI(QMainWindow):
             return "", ""
 
     def check_file_update(self):
-        """(v2.8) 모드에 따라 데이터 소스를 분기합니다."""
+        """❗️ (v2.12) 모드 분기 + 자정 로그 로테이션 체크."""
         
-        # 1. [Dry Run] 모드
+        # 1. ❗️ (v2.12) 자정 로그 로테이션 체크
+        today = datetime.date.today()
+        if today != self.current_log_date:
+            self.rotate_log_file(today)
+            # ❗️ self.current_log_date는 rotate_log_file에서 업데이트됨
+
+        # 2. [Dry Run] 모드
         if self.mode == "dry":
             self.generate_dummy_data()
             return
 
-        # 2. [Real] 또는 [Read-Only] 모드 (파일 읽기)
+        # 3. [Real] 또는 [Read-Only] 모드 (파일 읽기)
         try:
             new_filename = find_latest_file()
             if not new_filename:
@@ -545,8 +618,8 @@ class HVStreamerGUI(QMainWindow):
 
             # print live log
             if self.last_timestamp != hv_new_timestamp:
-                log_line = hv_lastline.replace('\t', ' ')
-                self.log_message(f"{log_line}")
+                log_line = hv_lastline.replace('\t', ' ') # ❗️ 탭 공백 변환
+                self.log_message(f"{log_line}") # ❗️ Updated record -> 제거
                 self.last_timestamp = hv_new_timestamp
                 hv_struc = hv_lastline.split()
                 
@@ -581,7 +654,7 @@ class HVStreamerGUI(QMainWindow):
             self.put_to_epics(hv_struc_str)
 
     def preload_file_data(self, filename):
-        """❗️ (v2.12) 'reverse_readline' 및 '//' 헤더 감지 로직 사용."""
+        """(v2.12) 'reverse_readline' 및 '//' 헤더 감지 로직 사용."""
         self.log_message(f"Pre-loading last {self.max_data_points} data points from {filename}...")
         self.clear_plot() # 시작하기 전에 플롯 초기화
         
@@ -657,10 +730,13 @@ class HVStreamerGUI(QMainWindow):
         # 8개 라인을 한 번에 모두 플롯
         self.update_all_plot_lines()
         
+        # ❗️ (v2.13) Y축 범위 수동 설정
+        self.update_y_ranges() 
+        
         self.log_message(f"Pre-loaded {len(self.time_data)} records (Last TS: {self.last_timestamp})")
 
     def update_all_plot_lines(self):
-        """❗️ (v2.9) 9개의 Deque 데이터를 8개의 플롯 라인에 모두 설정합니다."""
+        """(v2.9) 9개의 Deque 데이터를 8개의 플롯 라인에 모두 설정합니다."""
         time_list = list(self.time_data)
         
         # Plot 1
@@ -675,7 +751,7 @@ class HVStreamerGUI(QMainWindow):
         if self.voltee_line: self.voltee_line.setData(x=time_list, y=list(self.voltee_data))
 
     def update_plot(self, hv_struc):
-        """❗️ (v2.10) X축을 PC 시간(time.time)으로 사용하여 8개 라인을 업데이트합니다."""
+        """(v2.10) X축을 PC 시간(time.time)으로 사용하여 8개 라인을 업데이트합니다."""
         
         try:
             # X축을 PC 시간으로 사용 (v2.8 로직으로 복원)
@@ -709,10 +785,46 @@ class HVStreamerGUI(QMainWindow):
             # 8개 라인 그래프 갱신
             self.update_all_plot_lines()
             
+            # ❗️ (v2.13) Y축 범위 수동 업데이트
+            self.update_y_ranges()
+            
         except (IndexError, ValueError) as e:
             self.log_message(f"[PLOT ERROR] Invalid data for plot (need 10 columns): {e}")
         except Exception as e:
             self.log_message(f"[PLOT ERROR] Unexpected plot error: {e}")
+
+    # ❗️ (신규 v2.13) Y축 범위 수동 계산
+    def update_y_ranges(self):
+        """Y축 범위를 10% 상단 여백을 두고 수동 설정합니다."""
+        try:
+            # 1. V/I Plot (Left Axis: V_mon, V_set)
+            if self.volt_data:
+                v_min = min(min(self.volt_data), min(self.volt_set_data))
+                v_max = max(max(self.volt_data), max(self.volt_set_data))
+                v_range = v_max - v_min
+                v_padding = max(v_range * 0.1, 10.0) # 최소 10V 여백
+                self.plot_item_vi.setYRange(v_min - v_padding*0.1, v_max + v_padding) # ❗️ v_min도 약간 패딩
+
+            # 2. V/I Plot (Right Axis: I_mon, I_set)
+            if self.curr_data:
+                c_min = min(min(self.curr_data), min(self.curr_set_data))
+                c_max = max(max(self.curr_data), max(self.curr_set_data))
+                c_range = c_max - c_min
+                c_padding = max(c_range * 0.1, 1.0) # 최소 1uA 여백
+                self.p2_viewbox_vi.setYRange(c_min - c_padding*0.1, c_max + c_padding) # ❗️ v_min도 약간 패딩
+
+            # 3. Vdiv Plot (Left Axis: 4 Vdivs)
+            if self.voltww_data:
+                div_min = min(min(self.voltww_data), min(self.voltew_data), 
+                              min(self.voltwe_data), min(self.voltee_data))
+                div_max = max(max(self.voltww_data), max(self.voltew_data),
+                              max(self.voltwe_data), max(self.voltee_data))
+                div_range = div_max - div_min
+                div_padding = max(div_range * 0.1, 10.0) # 최소 10V 여백
+                self.plot_item_divider.setYRange(div_min - div_padding*0.1, div_max + div_padding) # ❗️ v_min도 약간 패딩
+        except Exception as e:
+            self.log_message(f"[Y-RANGE ERROR] {e}")
+
 
     def put_to_epics(self, hv_struc):
         """(v2.8) 3가지 모드에 따라 EPICS Put 로직을 분기합니다."""
@@ -745,18 +857,19 @@ class HVStreamerGUI(QMainWindow):
             self.log_message(f"[EPICS PUT ERROR] {e}")
 
     def closeEvent(self, event):
-        """Ensure timer and file are closed when window is shut."""
+        """(v2.12) Ensure timer and file are closed when window is shut."""
         self.log_message("--- Application Closing ---")
-        self.stop_monitoring() # Stop timer and close file handle
-        # Close the log file handle
+        self.stop_monitoring() # "Monitoring Stopped" 로그가 여기서 기록됨
+        
+        # ❗️ 로그 파일 핸들 닫기
         if self.log_file_handle:
             try:
-                self.log_message("Closing log file.")
+                self.log_message("Closing log file.") # 파일에 마지막 로그 남기기
                 self.log_file_handle.close()
                 self.log_file_handle = None
             except Exception as e:
-                print(f"Error closing log file: {e}")
-
+                print(f"Error closing log file: {e}") # GUI가 닫히는 중이므로 print
+                
         event.accept()
 
 # --- Application Entry Point ---
